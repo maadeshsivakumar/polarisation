@@ -1,4 +1,3 @@
-# main.py
 import logging
 import os
 from typing import Dict
@@ -15,17 +14,19 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Set your Gemini API key and initialize the Gemini client
-gemini_api_key = os.getenv("GEMINI_API_KEY")
-if not gemini_api_key:
+# Set your Gemini API key
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
     logger.error("GEMINI_API_KEY environment variable not set.")
     raise EnvironmentError("GEMINI_API_KEY environment variable not set.")
-client = genai.Client(api_key=gemini_api_key)
 
-# Create FastAPI app instance
+# Initialize Gemini client
+client = genai.Client(api_key=GEMINI_API_KEY)
+
+# Create FastAPI instance
 app = FastAPI(
     title="Political Polarization Transformer API",
-    description="API that transforms a given political text into 6 outputs with incremental degrees of polarization.",
+    description="Transforms a given political statement into six progressively polarized versions.",
     version="1.0.0"
 )
 
@@ -39,7 +40,7 @@ app.add_middleware(
 )
 
 
-# Define the schema for the polarization levels using Pydantic
+# Pydantic model defining the expected output structure from Gemini
 class PolarizationLevel(BaseModel):
     level_1: str
     level_2: str
@@ -49,88 +50,82 @@ class PolarizationLevel(BaseModel):
     level_6: str
 
 
-# Request model
+# Request model for polarization transformation
 class PolarizationRequest(BaseModel):
     text: str = Field(..., example="Enter your political text here.")
     feedback: bool = Field(..., example=True)  # True for thumbs up (disagree), False for thumbs down (agree)
 
 
-# Response model
+# Response model wrapping the polarization levels
 class PolarizationResponse(BaseModel):
     outputs: PolarizationLevel
 
 
-# Helper function to call Gemini API
 async def generate_polarized_text_gemini(original_text: str, feedback: bool) -> Dict[str, str]:
     """
-    Generate 6 progressively polarized versions of the text in a single API call.
-    The `feedback` determines if we polarize further in the direction of agreement or disagreement.
+    Generate six progressively polarized versions of a political statement using Gemini API.
+    The direction of polarization is based on user feedback:
+        - feedback=True: Polarize in the direction of disagreement.
+        - feedback=False: Polarize in the direction of agreement.
+
+    Returns a dictionary with keys level_1 to level_6.
     """
     direction = "disagree" if feedback else "agree"
 
     prompt = (
-        f"Given the following political statement: \"{original_text}\", generate 6 progressively more polarized "
-        f"versions of it.\n"
-        f"The polarization should increase at each level, with each level being more extreme than the last.\n"
-        f"After each level, you should express agreement with the user, and polarize the sentence further according "
-        f"to their feedback.\n"
-        f"Start with the base statement and modify it based on the feedback. Continue polarizing the statement in the "
-        f"direction of {direction}.\n\n"
+        f"Given the following political statement: \"{original_text}\", generate 6 progressively more polarized versions of it.\n"
+        f"Each level should be more extreme than the last. After each level, express agreement with the user and polarize further "
+        f"based on their feedback (direction: {direction}).\n\n"
         f"Text: {original_text}\n\n"
-        f"Output: \n"
+        f"Output (return in JSON format with keys level_1 through level_6):\n"
         f"{{\n"
-        f"  \"level_1\": \"[Mildly polarize the sentence, keeping it neutral with slight tone change.]\",\n"
-        f"  \"level_2\": \"[Take level 1 text, Increase the polarization, showing a clearer disagreement/stronger "
-        f"opinion.]\",\n"
-        f"  \"level_3\": \"[Take level 2 text, now A more critical stance with stronger language to highlight "
-        f"opposing views.]\",\n"
-        f"  \"level_4\": \"[Take level 3 text, now Aggressive tone, clearly dividing opinions with harsh language.]\",\n"
-        f"  \"level_5\": \"[Take level 4 text, now Use extreme language that accuses and labels the opposition.]\",\n"
-        f"  \"level_6\": \"[Take level 5 text, now Highly inflammatory and divisive language, calling for action or a "
-        f"strong response.]\"\n"
+        f'  "level_1": "[Mildly polarize the sentence with a slight tone change.]",\n'
+        f'  "level_2": "[Increase polarization with clearer disagreement/stronger opinion.]",\n'
+        f'  "level_3": "[Adopt a more critical stance with stronger language.]",\n'
+        f'  "level_4": "[Use an aggressive tone that clearly divides opinions.]",\n'
+        f'  "level_5": "[Employ extreme language to accuse and label the opposition.]",\n'
+        f'  "level_6": "[Adopt highly inflammatory and divisive language, calling for strong action.]" \n'
         f"}}\n"
-        f"Please return the full response in a valid JSON format as shown above."
+        f"Please return a valid JSON object following this structure."
     )
 
     try:
-        # Generate all levels in one call with the response schema defined
+        # Request structured JSON output from Gemini using a defined schema
         response = client.models.generate_content(
-            model="gemini-2.0-flash",  # Replace with the correct Gemini model name if needed
+            model="gemini-2.0-flash",  # Adjust model name if necessary
             contents=prompt,
             config={
-                'response_mime_type': 'application/json',  # Specify that we want the output in JSON format
-                'response_schema': PolarizationLevel,  # Specify the expected schema for the response
+                'response_mime_type': 'application/json',
+                'response_schema': PolarizationLevel,
             }
         )
 
-        # Check if response is valid and properly structured
         if not response.text:
             raise HTTPException(status_code=500, detail="Empty response from Gemini API.")
 
-        # Return the parsed response directly as a structured JSON
-        return response.parsed
+        parsed_response = response.parsed
+        if not isinstance(parsed_response, dict):
+            raise ValueError("Response is not in the expected dictionary format.")
+
+        return parsed_response
 
     except Exception as e:
         logger.error(f"Gemini API call failed: {e}")
         raise HTTPException(status_code=500, detail="Error generating polarized text.")
 
 
-# Main endpoint to process the political text input
 @app.post("/transform", response_model=PolarizationResponse)
 async def transform_text(request: PolarizationRequest):
     """
-    Accepts a political text input and returns six versions of the text, each with an increasing degree of polarization.
-    The text is progressively polarized based on the user's feedback (agree or disagree).
-    """
-    original_text = request.text
-    feedback = request.feedback  # True for thumbs up (disagree), False for thumbs down (agree)
+    Endpoint to transform a political statement into six progressively polarized versions.
 
+    - **text**: The original political statement.
+    - **feedback**: User feedback (True for disagree, False for agree) that guides further polarization.
+
+    Returns a JSON object with keys level_1 to level_6.
+    """
     try:
-        # Generate all six polarization levels in a single API call
-        outputs = await generate_polarized_text_gemini(original_text, feedback)
-    except HTTPException as http_err:
-        # Re-raise HTTP exceptions
-        raise http_err
+        outputs = await generate_polarized_text_gemini(request.text, request.feedback)
     except Exception as e:
         logger.error(f"Unexpected error during transformation: {e}")
         raise HTTPException(status_code=500, detail="Unexpected error during transformation.")
@@ -138,7 +133,6 @@ async def transform_text(request: PolarizationRequest):
     return PolarizationResponse(outputs=outputs)
 
 
-# For running with: uvicorn main:app --reload
 if __name__ == "__main__":
     import uvicorn
 
